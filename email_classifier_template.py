@@ -58,13 +58,24 @@ sample_emails = [
 class EmailProcessor:
     def __init__(self):
         """Initialize the email processor with OpenAI API key."""
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url="https://openrouter.ai/api/v1"
+        )
 
         # Define valid categories
         self.valid_categories = {
             "complaint", "inquiry", "feedback",
             "support_request", "other"
         }
+
+    def validate_email(self, email: Dict) -> bool:
+        """Validate a single email structure"""
+        required_fields = ["id", "from", "subject", "body", "timestamp"]
+        for field in required_fields:
+            if field not in email:
+                return False
+        return True
 
     def classify_email(self, email: Dict) -> Optional[str]:
         """
@@ -76,7 +87,42 @@ class EmailProcessor:
         2. Make the API call with appropriate error handling
         3. Validate and return the classification
         """
-        pass
+        prompt = f"""
+        You are an expert customer service representative. Your task is to classify a given email into one of the following categories:
+
+        - complaint: Emails that express dissatisfaction with a product or service.
+        - inquiry: Questions about products and services.
+        - feedback: Positive or neutral messages about products or services.
+        - support_request: Requests for assistance or support.
+        - other: Emails that do not fit into any of the above categories.
+
+        Here's the email content: {email['body']}
+
+        Please respond only with the category name from the list above. DO NOT include any additional information.
+        """
+
+        try:
+            response = self.client.chat.completions.create(
+                model="qwen/qwen2.5-vl-32b-instruct:free",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            result = response.choices[0].message.content.strip().lower()
+            # Check if the response is None or has no right attributes
+            if response is None or not hasattr(response, "choices"):
+                logger.error("Invalid response from the LLM API")
+                return None
+            
+            if result in self.valid_categories:
+                return result
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"Failed to classify email: {str(e)}")
+            return None
 
     def generate_response(self, email: Dict, classification: str) -> Optional[str]:
         """
@@ -87,8 +133,41 @@ class EmailProcessor:
         2. Implement appropriate response templates
         3. Add error handling
         """
-        pass
+        response_templates = {
+            "complaint": "Dear user,\n\n We apologize for the terrible experience you had with the product your received.\n\n Your issue number is {email['email_id']} One of our team members is looking into it and you will have a proper resolution in the next 24 hours.\n\n Thank you for your patience.",
+            "inquiry": "Dear user,\n\n Thank you for contacting us.\n\n You will be contacted by one of our team members with a response to your question soon.\n\n Best regards.",
+            "feedback": "Dear user,\n\n We appreciate the time you took to share your feedback.\n\n It help us improve our products so that we can serve you best.\n\n Thank you.",
+            "support_request": "Dear user,\n\n We received your request. Your support ticket number is support-{email['email_id']} and a member of the technical team will reach out to you with a proper response to your issue.\n\n Thank you for your patience.",
+            "other": "Dear user,\n\n We are processing your message and if needed you will get a response shortly.\n\n Thank you."
+        }
 
+        base_template = response_templates[classification]
+        filled_template = base_template.format(email_id=email['id'])
+
+        prompt = f"""
+        You are an experienced customer support agent. Your task is to take the following email 
+        response template and enhance it based on the email content and its classification.
+
+        Email content: {email['body']}
+        Classification: {classification}
+
+        Response template: {filled_template}
+
+        Please keep the tone of the original template and use empathetic language in the response.
+        Be professional and concise (max 3-4 sentences). DO NOT add any placeholders like [NAME] or [PRODUCT]. 
+        Only use information from the body of the email.
+        """
+
+        try:
+            response = self.client.chat.completions.create(
+                model="qwen/qwen2.5-vl-32b-instruct:free",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate response: {str(e)}")
 
 class EmailAutomationSystem:
     def __init__(self, processor: EmailProcessor):
@@ -112,42 +191,83 @@ class EmailAutomationSystem:
         2. Add appropriate error handling
         3. Return processing results
         """
-        pass
+        is_valid = self.processor.validate_email(email)
+        if not is_valid:
+            logger.error("Invalid email structure")
+            return {
+                "email_id": email['id'],
+                "success": False,
+                "classification": None,
+                "response_sent": None
+            }
 
-    def _handle_complaint(self, email: Dict):
+        try:
+            classification = self.processor.classify_email(email)
+            # Check if classification is valid
+            if classification not in self.response_handlers:
+                logger.error(f"Invalid classification: {classification}")
+                return {
+                    "email_id": email['id'],
+                    "success": False,
+                    "classification": classification,
+                    "response_sent": None
+                }
+            response = self.processor.generate_response(email, classification)
+            result = self.response_handlers[classification](email, response)
+            
+            return {
+                "email_id": email['id'],
+                "success": True,
+                "classification": classification,
+                "response_sent": response
+            }
+        except Exception as e:
+            logger.error(f"Failed to process email: {str(e)}")
+            return {
+                "email_id": email['id'],
+                "success": False,
+                "classification": None,
+                "response_sent": None
+            }
+            
+
+    def _handle_complaint(self, email: Dict, response: str):
         """
         Handle complaint emails.
         TODO: Implement complaint handling logic
         """
-        pass
+        create_urgent_ticket(email['id'], 'complaint', email['body'])
+        send_complaint_response(email['id'], response)
 
-    def _handle_inquiry(self, email: Dict):
+    def _handle_inquiry(self, email: Dict, response: str):
         """
         Handle inquiry emails.
         TODO: Implement inquiry handling logic
         """
-        pass
+        send_standard_response(email['id'], response)
 
-    def _handle_feedback(self, email: Dict):
+    def _handle_feedback(self, email: Dict, response: str):
         """
         Handle feedback emails.
         TODO: Implement feedback handling logic
         """
-        pass
+        log_customer_feedback(email['id'], email['body'])
+        send_standard_response(email['id'], response)
 
-    def _handle_support_request(self, email: Dict):
+    def _handle_support_request(self, email: Dict, response: str):
         """
         Handle support request emails.
         TODO: Implement support request handling logic
         """
-        pass
+        create_support_ticket(email['id'], email['body'])
+        send_standard_response(email['id'], response)
 
-    def _handle_other(self, email: Dict):
+    def _handle_other(self, email: Dict, response: str):
         """
         Handle other category emails.
         TODO: Implement handling logic for other categories
         """
-        pass
+        send_standard_response(email['id'], response)
 
 # Mock service functions
 def send_complaint_response(email_id: str, response: str):

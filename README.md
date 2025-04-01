@@ -35,8 +35,8 @@ OPENAI_API_KEY=your_api_key_here
 ```
 
 ## Exercise Structure
-The exercise is divided into four main parts:
 
+The exercise is divided into four main parts:
 ### Part 1: Email Data Processing (10 minutes)
 - Load and validate the provided mock email data
 - Create functions to extract email data
